@@ -1,23 +1,97 @@
 # MindTrace
 
-MindTrace is a final-year-project MVP for presenting psychometric responses alongside observable, non-diagnostic behavioural telemetry for qualified counsellor review.
+**Multimodal Behavioral Analytics for Psychometric Student Counselling**
 
-## Day 1 status
+MindTrace is a final-year Computer Science project that combines **psychometric assessment** with **observable computer-vision-based behavioural telemetry** to provide counsellors with a broader view of student assessment sessions.
 
-This foundation includes a React + TypeScript + Vite frontend styled with Tailwind, a FastAPI backend, SQLite/SQLAlchemy connectivity, CORS, secure student/counsellor JWT login, and a tested `GET /api/health` endpoint. Day 3 adds a 20-item original Big Five-style assessment, timestamped 1–5 responses, session completion, and transparent rule-based trait summaries. Webcam capture and computer-vision processing are not included yet.
+The system presents self-reported personality-related assessment results alongside non-diagnostic behavioural signals such as facial presence, eye aspect ratio, blinking, gaze direction, and head movement.
 
-## Assessment scoring
+> **Important:** MindTrace is an academic decision-support prototype. Its behavioural analytics are observational and non-diagnostic. They must not be used to diagnose mental-health conditions or infer a student's true emotional or psychological state.
 
-Each trait has four original project-specific prompts. A response uses a 1–5 Likert scale. Negatively keyed items are normalized with `6 - response`; each trait is then expressed as the mean normalized response on a 0–100 scale. These self-report summaries are not clinical or diagnostic findings.
+---
 
-## Architecture
+## Features
 
-```
-React frontend -> FastAPI API -> SQLAlchemy -> SQLite
-```
+### Student
 
-See [the setup guide](docs/SETUP.md) and [high-level design](docs/HLD.md).
+- Student registration and secure JWT authentication
+- Student portal
+- Psychometric assessment interface
+- 20-item Big Five-style assessment
+- 1–5 Likert-scale responses
+- Automatic assessment scoring
+- Assessment session tracking
+- Webcam-based behavioural telemetry during assessment
+- Student results page
+- Assessment history
 
-## Privacy and scope
+### Counsellor
 
-Future behavioural measures are intended as observable interaction signals only. They are not diagnostic measures and do not establish a mental-health condition or true emotional state. Raw webcam video will not be stored by default.
+- Secure counsellor authentication
+- Counsellor dashboard
+- Student assessment history
+- Completed assessment reports
+- Psychometric trait scores
+- Behavioural analytics
+- Session timing information
+- CV sample statistics
+- Protected test-data cleanup
+
+### Computer Vision
+
+During an assessment, the system processes webcam frames to extract observable behavioural signals.
+
+The CV pipeline includes:
+
+- Face detection
+- Facial landmark detection
+- Face presence tracking
+- Eye Aspect Ratio (EAR)
+- Blink detection
+- Horizontal gaze estimation
+- Vertical gaze estimation
+- Head yaw
+- Head pitch
+- Head roll
+- Movement analysis
+- Behavioural deviation analysis
+
+Raw webcam video is not stored.
+
+---
+
+## System Architecture
+
+```text
+                    ┌──────────────────────┐
+                    │      Student         │
+                    │   /   Counsellor     │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ React + TypeScript   │
+                    │       + Vite         │
+                    └──────────┬───────────┘
+                               │
+                         REST API / JSON
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │       FastAPI        │
+                    │      Backend         │
+                    └──────────┬───────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                │                │
+              ▼                ▼                ▼
+        ┌──────────┐    ┌────────────┐   ┌─────────────┐
+        │ Auth &   │    │ Assessment │   │ Computer    │
+        │ RBAC     │    │ & Scoring  │   │ Vision      │
+        └──────────┘    └────────────┘   └─────────────┘
+              │                │                │
+              └────────────────┼────────────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │ SQLAlchemy + SQLite │
+                    └──────────────────────┘
