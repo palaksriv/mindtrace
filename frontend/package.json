@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "@vitejs/plugin-react": "latest",
     "axios": "latest",
     "react": "latest",

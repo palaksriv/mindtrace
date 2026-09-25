@@ -1,7 +1,44 @@
 from collections import Counter
+from dataclasses import dataclass
 from statistics import mean, pstdev
 
 from app.models.assessment import BehaviorTelemetry, Response
+
+
+@dataclass(frozen=True)
+class AnalyticsConfig:
+    """Every heuristic weight and threshold in one place.
+
+    These values are design choices that have NOT yet been calibrated against
+    real sessions (see docs/PILOT_PROTOCOL.md). Keeping them in a single
+    immutable object makes calibration and sensitivity analysis explicit and
+    lets tests exercise alternative settings without editing the algorithm.
+    """
+
+    # Head-movement normalisation: standard deviation (degrees) that maps to 100.
+    yaw_reference_deg: float = 20.0
+    pitch_reference_deg: float = 40.0
+    roll_reference_deg: float = 25.0
+    # Movement score weights (sum to 1).
+    yaw_weight: float = 0.35
+    pitch_weight: float = 0.40
+    roll_weight: float = 0.25
+    # Deviation index weights (sum to 1).
+    face_weight: float = 0.30
+    gaze_weight: float = 0.35
+    movement_weight: float = 0.35
+    # Level cut-offs on the 0-100 deviation index.
+    moderate_from: float = 30.0
+    high_from: float = 60.0
+    # Cue thresholds.
+    min_face_presence_percent: float = 80.0
+    min_center_gaze_percent: float = 50.0
+    movement_cue_from: float = 60.0
+    # Data-quality: fewer samples than this (30 s at 2 Hz) is flagged as sparse.
+    min_reliable_samples: int = 60
+
+
+DEFAULT_CONFIG = AnalyticsConfig()
 
 
 def _safe_mean(values: list[float]) -> float:
@@ -25,14 +62,45 @@ def _percentage(part: int, total: int) -> float:
     return round((part / total) * 100, 2)
 
 
-def _classify_deviation(score: float) -> str:
-    if score < 30:
+def _classify_deviation(score: float, config: AnalyticsConfig = DEFAULT_CONFIG) -> str:
+    if score < config.moderate_from:
         return "LOW"
 
-    if score < 60:
+    if score < config.high_from:
         return "MODERATE"
 
     return "HIGH"
+
+
+def _calculate_data_quality(
+    telemetry: list[BehaviorTelemetry],
+    config: AnalyticsConfig,
+) -> dict:
+    """Describe how much telemetry exists so that absence is never silent."""
+    count = len(telemetry)
+    if count == 0:
+        return {
+            "status": "no_telemetry",
+            "sample_count": 0,
+            "duration_seconds": 0.0,
+            "effective_sampling_hz": 0.0,
+        }
+
+    stamps = [
+        item.recorded_at
+        for item in telemetry
+        if getattr(item, "recorded_at", None) is not None
+    ]
+    duration = (
+        (max(stamps) - min(stamps)).total_seconds() if len(stamps) >= 2 else 0.0
+    )
+    hz = round((count - 1) / duration, 3) if duration > 0 else 0.0
+    return {
+        "status": "sparse" if count < config.min_reliable_samples else "ok",
+        "sample_count": count,
+        "duration_seconds": round(duration, 2),
+        "effective_sampling_hz": hz,
+    }
 
 
 def _calculate_response_latency(
@@ -187,6 +255,7 @@ def _calculate_gaze_distribution(
 
 def _calculate_head_movement(
     telemetry: list[BehaviorTelemetry],
+    config: AnalyticsConfig = DEFAULT_CONFIG,
 ) -> dict:
     if len(telemetry) < 2:
         return {
@@ -223,23 +292,23 @@ def _calculate_head_movement(
     # psychological interpretation.
     yaw_score = min(
         100.0,
-        (yaw_variation / 20.0) * 100.0,
+        (yaw_variation / config.yaw_reference_deg) * 100.0,
     )
 
     pitch_score = min(
         100.0,
-        (pitch_variation / 40.0) * 100.0,
+        (pitch_variation / config.pitch_reference_deg) * 100.0,
     )
 
     roll_score = min(
         100.0,
-        (roll_variation / 25.0) * 100.0,
+        (roll_variation / config.roll_reference_deg) * 100.0,
     )
 
     movement_score = (
-        yaw_score * 0.35
-        + pitch_score * 0.40
-        + roll_score * 0.25
+        yaw_score * config.yaw_weight
+        + pitch_score * config.pitch_weight
+        + roll_score * config.roll_weight
     )
 
     movement_score = round(
@@ -255,11 +324,25 @@ def _calculate_head_movement(
     }
 
 
+def _both_center_percent(telemetry: list[BehaviorTelemetry]) -> float:
+    """Share of face-present samples with BOTH gaze axes labelled centre."""
+    if not telemetry:
+        return 0.0
+    both = sum(
+        1
+        for item in telemetry
+        if _split_gaze_direction(item.gaze_direction) == ("center", "center")
+    )
+    return _percentage(both, len(telemetry))
+
+
 def calculate_behavioral_analytics(
     telemetry: list[BehaviorTelemetry],
     responses: list[Response] | None = None,
+    config: AnalyticsConfig = DEFAULT_CONFIG,
 ) -> dict:
     responses = responses or []
+    data_quality = _calculate_data_quality(telemetry, config)
 
     response_latency = _calculate_response_latency(
         responses
@@ -268,8 +351,10 @@ def calculate_behavioral_analytics(
     if not telemetry:
         return {
             "sample_count": 0,
+            "data_quality": data_quality,
             "face_presence_percent": 0.0,
             "blink_rate": 0.0,
+            "blink_rate_per_minute": 0.0,
             "average_ear": 0.0,
             "response_latency": response_latency,
             "gaze_distribution": {
@@ -285,6 +370,7 @@ def calculate_behavioral_analytics(
                     "down": 0.0,
                     "unknown": 0.0,
                 },
+                "center_both_percent": 0.0,
             },
             "head_movement": {
                 "yaw_variation": 0.0,
@@ -292,10 +378,14 @@ def calculate_behavioral_analytics(
                 "roll_variation": 0.0,
                 "movement_score": 0.0,
             },
+            # No data is reported as UNAVAILABLE, never as a calm LOW session.
             "behavioral_deviation": {
                 "score": 0.0,
-                "level": "LOW",
-                "signals": [],
+                "level": "UNAVAILABLE",
+                "signals": [
+                    "No camera telemetry was captured; behavioural "
+                    "indicators are unavailable for this session."
+                ],
             },
         }
 
@@ -336,9 +426,13 @@ def calculate_behavioral_analytics(
     gaze_distribution = _calculate_gaze_distribution(
         valid_face_samples
     )
+    gaze_distribution["center_both_percent"] = _both_center_percent(
+        valid_face_samples
+    )
 
     head_movement = _calculate_head_movement(
-        valid_face_samples
+        valid_face_samples,
+        config,
     )
 
     movement_score = head_movement[
@@ -372,9 +466,9 @@ def calculate_behavioral_analytics(
         100.0,
         round(
             (
-                face_deviation * 0.30
-                + gaze_deviation * 0.35
-                + movement_deviation * 0.35
+                face_deviation * config.face_weight
+                + gaze_deviation * config.gaze_weight
+                + movement_deviation * config.movement_weight
             ),
             2,
         ),
@@ -382,33 +476,46 @@ def calculate_behavioral_analytics(
 
     signals: list[str] = []
 
-    if face_presence_percent < 80:
+    if data_quality["status"] == "sparse":
+        signals.append(
+            "Very few telemetry samples were captured; interpret the "
+            "indicators with caution."
+        )
+
+    if face_presence_percent < config.min_face_presence_percent:
         signals.append(
             "Face presence was inconsistent during the session."
         )
 
     if (
-        center_horizontal < 50
-        or center_vertical < 50
+        center_horizontal < config.min_center_gaze_percent
+        or center_vertical < config.min_center_gaze_percent
     ):
         signals.append(
             "Gaze was frequently directed away from the center."
         )
 
-    if movement_score >= 60:
+    if movement_score >= config.movement_cue_from:
         signals.append(
             "Noticeable head movement variation was observed."
         )
 
-    if not signals:
+    if not any(s for s in signals if not s.startswith("Very few")):
         signals.append(
             "No major behavioral deviations were observed."
         )
 
+    duration_minutes = data_quality["duration_seconds"] / 60.0
+    blink_rate_per_minute = (
+        round(blink_events / duration_minutes, 2) if duration_minutes > 0 else 0.0
+    )
+
     return {
         "sample_count": total_samples,
+        "data_quality": data_quality,
         "face_presence_percent": face_presence_percent,
         "blink_rate": blink_rate,
+        "blink_rate_per_minute": blink_rate_per_minute,
         "average_ear": average_ear,
         "response_latency": response_latency,
         "gaze_distribution": gaze_distribution,
@@ -416,7 +523,8 @@ def calculate_behavioral_analytics(
         "behavioral_deviation": {
             "score": deviation_score,
             "level": _classify_deviation(
-                deviation_score
+                deviation_score,
+                config,
             ),
             "signals": signals,
         },

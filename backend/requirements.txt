@@ -6,8 +6,9 @@ pydantic-settings==2.15.0
 pyjwt==2.14.0
 pwdlib[argon2]==0.3.1
 email-validator==2.3.0
-opencv-python==5.0.0.93
-mediapipe
+opencv-python==4.10.0.84
+opencv-contrib-python==4.10.0.84
+
 numpy==2.5.3
 scipy
 pytest==8.4.2

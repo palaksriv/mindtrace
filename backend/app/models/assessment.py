@@ -157,3 +157,26 @@ class BehaviorTelemetry(Base):
         nullable=False,
         default=0.0,
     )
+
+
+class ConsentRecord(Base):
+    """Auditable record that a student agreed to webcam telemetry for one session."""
+    __tablename__ = "consent_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), unique=True, nullable=False, index=True)
+    granted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    notice_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class CounsellorReview(Base):
+    """A counsellor-owned workflow note for one completed session."""
+    __tablename__ = "counsellor_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), unique=True, nullable=False, index=True)
+    counsellor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="routine")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

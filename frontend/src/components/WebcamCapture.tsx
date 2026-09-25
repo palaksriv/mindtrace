@@ -1,499 +1,78 @@
-
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../services/api'
+import { api, authHeaders } from '../services/api'
 
-type WebcamCaptureProps = {
-  sessionId?: number
-  onFrame?: (canvas: HTMLCanvasElement) => void
-  onStatusChange?: (active: boolean) => void
-}
+type Props = { sessionId?: number; onStatusChange?: (active: boolean) => void }
+type Point = { x: number; y: number }
 
-export function WebcamCapture({
-  sessionId,
-  onFrame,
-  onStatusChange,
-}: WebcamCaptureProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+// Pinned versions: the WASM runtime matches the npm package in package-lock.json and the
+// model uses Google's versioned path, so results are reproducible between runs.
+const modelUrl = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
+const wasmUrl = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm'
+const SAMPLE_INTERVAL_MS = 500 // 2 Hz telemetry cadence (documented in the paper)
+const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
+
+export function WebcamCapture({ sessionId, onStatusChange }: Props) {
+  const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const intervalRef = useRef<number | null>(null)
+  const detectorRef = useRef<FaceLandmarker | null>(null)
+  const timerRef = useRef<number | null>(null)
   const sessionIdRef = useRef<number | undefined>(sessionId)
-  const analyzingRef = useRef(false)
-
-  const [status, setStatus] = useState<
-    'idle' | 'starting' | 'active' | 'denied' | 'error'
-  >('idle')
-
-  const [message, setMessage] = useState('')
-
+  const blinkCountRef = useRef(0)
+  const closedRef = useRef(false)
+  const [status, setStatus] = useState<'idle' | 'starting' | 'active' | 'error'>('idle')
+  const [message, setMessage] = useState('Camera is off.')
   const [faceDetected, setFaceDetected] = useState(false)
-  const [landmarkCount, setLandmarkCount] = useState(0)
-  const [leftEar, setLeftEar] = useState(0)
-  const [rightEar, setRightEar] = useState(0)
-  const [blinkCount, setBlinkCount] = useState(0)
-  const [gazeDirection, setGazeDirection] = useState('unknown')
-  const [yaw, setYaw] = useState(0)
-  const [pitch, setPitch] = useState(0)
-  const [roll, setRoll] = useState(0)
 
-  /*
-   * Always keep the latest session ID.
-   */
-  useEffect(() => {
-    const previousSessionId = sessionIdRef.current
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
-    sessionIdRef.current = sessionId
-
-    console.log(
-      '[WEBCAM] sessionId:',
-      previousSessionId,
-      '->',
-      sessionId,
-    )
-
-    /*
-     * The camera may already be active when the assessment
-     * session gets created.
-     *
-     * Start CV immediately when that happens.
-     */
-    if (
-      sessionId &&
-      status === 'active' &&
-      previousSessionId !== sessionId
-    ) {
-      console.log(
-        '[WEBCAM] Session received. Starting CV loop.',
-      )
-
-      startCvLoop()
-    }
-  }, [sessionId, status])
-
-  /*
-   * Start the camera when requested by the user.
-   */
   async function startCamera() {
-    console.log('[WEBCAM] startCamera()')
-
-    setStatus('starting')
-    setMessage('Requesting camera permission...')
-    onStatusChange?.(false)
-
+    setStatus('starting'); setMessage('Requesting camera permission…')
     try {
-      const stream =
-        await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user',
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-          },
-          audio: false,
-        })
-
-      console.log('[WEBCAM] Camera permission granted.')
-
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false })
       streamRef.current = stream
-
       const video = videoRef.current
-
-      if (!video) {
-        throw new Error(
-          'Video element is unavailable.',
-        )
-      }
-
-      video.srcObject = stream
-
-      await video.play()
-
-      console.log(
-        '[WEBCAM] Video playing:',
-        video.videoWidth,
-        'x',
-        video.videoHeight,
-      )
-
-      setStatus('active')
-      onStatusChange?.(true)
-
-      if (sessionIdRef.current) {
-        setMessage(
-          'Camera is active. Starting CV analysis...',
-        )
-
-        /*
-         * Session already exists.
-         */
-        startCvLoop()
-      } else {
-        setMessage(
-          'Camera active. Waiting for assessment session...',
-        )
-      }
+      if (!video) throw new Error('Camera preview is unavailable.')
+      video.srcObject = stream; await video.play()
+      const vision = await FilesetResolver.forVisionTasks(wasmUrl)
+      detectorRef.current = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: modelUrl, delegate: 'CPU' }, runningMode: 'VIDEO', numFaces: 1,
+      })
+      setStatus('active'); setMessage('Camera analysis is active in this browser.'); onStatusChange?.(true)
+      timerRef.current = window.setInterval(() => { void analyse() }, SAMPLE_INTERVAL_MS)
     } catch (error) {
-      console.error(
-        '[WEBCAM] Unable to access webcam:',
-        error,
-      )
-
-      onStatusChange?.(false)
-
-      if (
-        error instanceof DOMException &&
-        error.name === 'NotAllowedError'
-      ) {
-        setStatus('denied')
-        setMessage(
-          'Camera permission was denied.',
-        )
-      } else {
-        setStatus('error')
-        setMessage(
-          'Unable to access the camera.',
-        )
-      }
+      console.error(error); setStatus('error'); setMessage('Unable to start browser-based camera analysis.'); onStatusChange?.(false)
     }
   }
 
-  /*
-   * Start the CV loop.
-   */
-  function startCvLoop() {
-    if (intervalRef.current !== null) {
-      console.log(
-        '[WEBCAM] CV loop already running.',
-      )
+  async function analyse() {
+    const video = videoRef.current; const detector = detectorRef.current
+    if (!video || !detector || video.readyState < 2) return
+    const landmarks = detector.detectForVideo(video, performance.now()).faceLandmarks[0] as Point[] | undefined
+    if (!landmarks) {
+      setFaceDetected(false); setMessage('No face detected.')
+      if (sessionIdRef.current) await send({ face_detected: false, landmark_count: 0, left_ear: 0, right_ear: 0, blink_detected: false, blink_count: blinkCountRef.current, gaze: { horizontal: 0, vertical: 0, direction: 'unknown' }, head_pose: { yaw: 0, pitch: 0, roll: 0 } })
       return
     }
-
-    if (!sessionIdRef.current) {
-      console.log(
-        '[WEBCAM] Cannot start CV loop: no session ID.',
-      )
-      return
-    }
-
-    console.log(
-      '[WEBCAM] Starting CV loop for session:',
-      sessionIdRef.current,
-    )
-
-    /*
-     * First frame immediately.
-     */
-    void captureFrame()
-
-    /*
-     * Then approximately 5 frames/second.
-     */
-    intervalRef.current = window.setInterval(() => {
-      void captureFrame()
-    }, 83)
+    const ear = (ids: number[]) => (distance(landmarks[ids[1]], landmarks[ids[5]]) + distance(landmarks[ids[2]], landmarks[ids[4]])) / distance(landmarks[ids[0]], landmarks[ids[3]])
+    const left = ear([33, 160, 158, 133, 153, 144]); const right = ear([362, 385, 387, 263, 373, 380])
+    const isClosed = (left + right) / 2 < 0.45
+    const blink = !closedRef.current && isClosed
+    if (blink) blinkCountRef.current += 1
+    closedRef.current = isClosed
+    const eyeLeft = landmarks[33], eyeRight = landmarks[263], nose = landmarks[1], chin = landmarks[152]
+    const horizontal = Math.max(-0.5, Math.min(0.5, (nose.x - (eyeLeft.x + eyeRight.x) / 2) / distance(eyeLeft, eyeRight)))
+    const vertical = Math.max(-0.5, Math.min(0.5, (nose.y - (eyeLeft.y + eyeRight.y) / 2) / distance({ x: (eyeLeft.x + eyeRight.x) / 2, y: (eyeLeft.y + eyeRight.y) / 2 }, chin)))
+    const h = horizontal < -0.08 ? 'left' : horizontal > 0.08 ? 'right' : 'center'
+    const v = vertical < -0.12 ? 'up' : vertical > 0.12 ? 'down' : 'center'
+    const roll = Math.atan2(eyeRight.y - eyeLeft.y, eyeRight.x - eyeLeft.x) * 180 / Math.PI
+    const payload = { face_detected: true, landmark_count: landmarks.length, left_ear: left, right_ear: right, blink_detected: blink, blink_count: blinkCountRef.current, gaze: { horizontal, vertical, direction: `${h}-${v}` }, head_pose: { yaw: horizontal * 90, pitch: vertical * 90, roll } }
+    setFaceDetected(true); setMessage(`Face detected · ${landmarks.length} landmarks`)
+    if (sessionIdRef.current) await send(payload)
   }
 
-  /*
-   * Capture and send one webcam frame.
-   */
-  async function captureFrame() {
-    const video = videoRef.current
-    const canvas = canvasRef.current
-    const currentSessionId =
-      sessionIdRef.current
-
-    
-
-    if (
-      !video ||
-      !canvas ||
-      video.readyState < 2 ||
-      video.videoWidth === 0 ||
-      video.videoHeight === 0 ||
-      analyzingRef.current
-    ) {
-      return
-    }
-
-    const context =
-      canvas.getContext('2d')
-
-    if (!context) {
-      console.error(
-        '[WEBCAM] Could not get canvas context.',
-      )
-      return
-    }
-
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-
-    context.drawImage(
-      video,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-    )
-
-    onFrame?.(canvas)
-
-    analyzingRef.current = true
-
-    try {
-      const image = canvas.toDataURL(
-        'image/jpeg',
-        0.7,
-      )
-
-      const token = localStorage.getItem(
-        'mindtrace_access_token',
-      )
-
-      if (!token) {
-        throw new Error(
-          'MindTrace access token is missing.',
-        )
-      }
-
-      console.log(
-        '[WEBCAM] POST /cv/analyze session:',
-        currentSessionId,
-      )
-
-      const endpoint = currentSessionId
-  ? '/cv/analyze'
-  : '/cv/preview'
-
-const payload = currentSessionId
-  ? {
-      image,
-      session_id: currentSessionId,
-    }
-  : {
-      image,
-    }
-
-const { data } = await api.post(
-  endpoint,
-  payload,
-  {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  },
-)
-
-      console.log(
-        '[WEBCAM] CV response:',
-        data,
-      )
-
-      setFaceDetected(
-        Boolean(data.face_detected),
-      )
-
-      setLandmarkCount(
-        Number(data.landmark_count ?? 0),
-      )
-
-      setLeftEar(
-        Number(data.left_ear ?? 0),
-      )
-
-      setRightEar(
-        Number(data.right_ear ?? 0),
-      )
-
-      setBlinkCount(
-        Number(data.blink_count ?? 0),
-      )
-
-      setGazeDirection(
-        data.gaze?.direction ?? 'unknown',
-      )
-
-      setYaw(
-        Number(data.head_pose?.yaw ?? 0),
-      )
-
-      setPitch(
-        Number(data.head_pose?.pitch ?? 0),
-      )
-
-      setRoll(
-        Number(data.head_pose?.roll ?? 0),
-      )
-
-      setMessage(
-        data.face_detected
-          ? 'Face detected.'
-          : 'No face detected.',
-      )
-    } catch (error) {
-      console.error(
-        '[WEBCAM] CV frame analysis failed:',
-        error,
-      )
-    } finally {
-      analyzingRef.current = false
-    }
-  }
-
-  function stopCamera() {
-    console.log('[WEBCAM] stopCamera()')
-
-    if (intervalRef.current !== null) {
-      window.clearInterval(
-        intervalRef.current,
-      )
-
-      intervalRef.current = null
-    }
-
-    if (streamRef.current) {
-      streamRef.current
-        .getTracks()
-        .forEach((track) => track.stop())
-
-      streamRef.current = null
-    }
-
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
-    }
-
-    sessionIdRef.current = undefined
-
-    setFaceDetected(false)
-    setLandmarkCount(0)
-    setLeftEar(0)
-    setRightEar(0)
-    setBlinkCount(0)
-    setGazeDirection('unknown')
-    setYaw(0)
-    setPitch(0)
-    setRoll(0)
-
-    setStatus('idle')
-    setMessage('')
-
-    onStatusChange?.(false)
-  }
-
-  /*
-   * Component cleanup.
-   */
-  useEffect(() => {
-    return () => {
-      if (intervalRef.current !== null) {
-        window.clearInterval(
-          intervalRef.current,
-        )
-
-        intervalRef.current = null
-      }
-
-      if (streamRef.current) {
-        streamRef.current
-          .getTracks()
-          .forEach((track) => track.stop())
-
-        streamRef.current = null
-      }
-    }
-  }, [])
-
-  return (
-    <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
-      <div className="aspect-video overflow-hidden rounded-md bg-slate-900">
-        <video
-          ref={videoRef}
-          muted
-          playsInline
-          className="h-full w-full object-cover"
-        />
-      </div>
-
-      <canvas
-        ref={canvasRef}
-        className="hidden"
-      />
-
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <p className="font-semibold">
-            Webcam
-          </p>
-
-          <p className="text-sm text-slate-500">
-            {message}
-          </p>
-
-          {status === 'active' && (
-            <div className="mt-2 space-y-1 text-xs text-slate-500">
-              <p>
-                Face:{' '}
-                {faceDetected
-                  ? 'Detected'
-                  : 'Not detected'}
-                {' · '}
-                Landmarks: {landmarkCount}
-              </p>
-
-              {faceDetected && (
-                <>
-                  <p>
-                    EAR: {leftEar.toFixed(3)} /{' '}
-                    {rightEar.toFixed(3)}
-                    {' · '}
-                    Blinks: {blinkCount}
-                  </p>
-
-                  <p>
-                    Gaze: {gazeDirection}
-                  </p>
-
-                  <p>
-                    Head pose:{' '}
-                    Yaw {yaw.toFixed(1)}°
-                    {' · '}
-                    Pitch {pitch.toFixed(1)}°
-                    {' · '}
-                    Roll {roll.toFixed(1)}°
-                  </p>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-
-        {status === 'idle' && (
-          <button
-            type="button"
-            onClick={startCamera}
-            className="rounded-md bg-indigo-700 px-4 py-2 font-semibold text-white"
-          >
-            Enable camera
-          </button>
-        )}
-
-        {status === 'starting' && (
-          <span className="text-sm text-slate-500">
-            Starting camera...
-          </span>
-        )}
-
-        {status === 'active' && (
-          <button
-            type="button"
-            onClick={stopCamera}
-            className="rounded-md border border-slate-300 px-4 py-2 font-semibold"
-          >
-            Stop camera
-          </button>
-        )}
-      </div>
-    </div>
-  )
+  async function send(payload: object) { try { await api.post('/cv/telemetry', { session_id: sessionIdRef.current, ...payload }, { headers: authHeaders() }) } catch { /* telemetry must not interrupt assessment */ } }
+  function stop() { if (timerRef.current) window.clearInterval(timerRef.current); timerRef.current = null; detectorRef.current?.close(); detectorRef.current = null; streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null; setStatus('idle'); setFaceDetected(false); setMessage('Camera is off.'); onStatusChange?.(false) }
+  useEffect(() => () => stop(), [])
+  return <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-4"><div className="aspect-video overflow-hidden rounded-md bg-slate-900"><video ref={videoRef} muted playsInline className="h-full w-full object-cover" /></div><div className="flex items-center justify-between gap-4"><div><p className="font-semibold">Webcam</p><p className="text-sm text-slate-500">{message}</p>{status === 'active' && <p className="mt-1 text-xs text-slate-500">Face: {faceDetected ? 'Detected' : 'Not detected'} · Analysis stays in this browser.</p>}</div>{status === 'idle' && <button type="button" onClick={() => void startCamera()} className="rounded-md bg-indigo-700 px-4 py-2 font-semibold text-white">Enable camera</button>}{status === 'starting' && <span className="text-sm text-slate-500">Starting…</span>}{status === 'active' && <button type="button" onClick={stop} className="rounded-md border border-slate-300 px-4 py-2 font-semibold">Stop camera</button>}</div></div>
 }
-

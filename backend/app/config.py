@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,9 +17,17 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(min_length=32)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = Field(default=60, gt=0)
+    # Counsellor accounts can only be created by presenting this invite code.
+    # Leave empty to disable counsellor self-registration entirely (accounts
+    # are then created with scripts/seed_demo_users.py or by an administrator).
+    counsellor_invite_code: str = ""
+    # Destructive test-data wipe endpoint; keep disabled outside local development.
+    allow_data_wipe: bool = False
+    # Version string stored with every consent record.
+    consent_notice_version: str = "2026-09-v1"
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=Path(__file__).resolve().parents[2] / ".env",
         env_prefix="MINDTRACE_",
         case_sensitive=False,
     )

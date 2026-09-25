@@ -1,0 +1,5 @@
+# Optional: only needed for the server-side reference CV implementation in
+# app/services/cv/face_detector.py, which no API route calls. The deployed
+# system performs landmark analysis in the browser.
+-r requirements.txt
+mediapipe

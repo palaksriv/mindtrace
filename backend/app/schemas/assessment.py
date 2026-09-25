@@ -34,6 +34,19 @@ class CreateSessionRequest(BaseModel):
     assessment_id: int
 
 
+class ConsentRequest(BaseModel):
+    granted: bool
+
+
+class ConsentResponse(BaseModel):
+    session_id: int
+    granted: bool
+    notice_version: str
+    recorded_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SessionResponse(BaseModel):
     id: int
     assessment_id: int

@@ -33,7 +33,8 @@ class FaceDetector:
             )
 
         base_options = mp.tasks.BaseOptions(
-            model_asset_path=str(model_path)
+            model_asset_path=str(model_path),
+            delegate=mp.tasks.BaseOptions.Delegate.CPU,
         )
 
         options = mp.tasks.vision.FaceLandmarkerOptions(

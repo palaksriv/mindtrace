@@ -71,6 +71,10 @@ function formatDate(value: string) {
   return new Date(value).toLocaleString()
 }
 
+function Snapshot({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="rounded-xl bg-slate-50 p-4"><p className="text-sm text-slate-500">{label}</p><p className="mt-1 text-xl font-bold text-slate-900">{value}</p><p className="mt-1 text-xs text-slate-500">{detail}</p></div>
+}
+
 export function CounsellorSessionPage() {
   const { sessionId } = useParams()
 
@@ -79,6 +83,10 @@ export function CounsellorSessionPage() {
 
   const [error, setError] =
     useState<string | null>(null)
+  const [reviewStatus, setReviewStatus] = useState('routine')
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     if (!sessionId) {
@@ -106,6 +114,20 @@ export function CounsellorSessionPage() {
     loadSession()
   }, [sessionId])
 
+  useEffect(() => {
+    if (!sessionId) return
+    api.get<{status:string;notes:string}>(`/counsellor/sessions/${sessionId}/review`, { headers: authHeaders() })
+      .then(({data}) => { setReviewStatus(data.status); setNotes(data.notes) })
+      .catch(() => undefined)
+  }, [sessionId])
+
+  async function saveReview() {
+    if (!sessionId) return
+    setSaving(true); setSaved(false)
+    try { await api.put(`/counsellor/sessions/${sessionId}/review`, { status: reviewStatus, notes }, { headers: authHeaders() }); setSaved(true) }
+    finally { setSaving(false) }
+  }
+
   if (error) {
     return (
       <section className="space-y-4">
@@ -132,6 +154,7 @@ export function CounsellorSessionPage() {
   }
 
   const analytics = data.analytics
+  const traits = Object.entries(data.results.trait_scores)
 
   return (
     <section className="mx-auto max-w-5xl space-y-6">
@@ -185,10 +208,19 @@ export function CounsellorSessionPage() {
         </p>
       </div>
 
+      <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-semibold uppercase tracking-wider text-indigo-700">Counsellor workflow</p><h2 className="mt-1 text-xl font-bold">Review notes & follow-up</h2><p className="mt-1 text-sm text-slate-600">Private working notes for this assessment session.</p></div><select value={reviewStatus} onChange={e=>setReviewStatus(e.target.value)} className="rounded-lg border border-indigo-200 bg-white px-3 py-2 font-semibold text-slate-800"><option value="routine">Routine</option><option value="review">Needs review</option><option value="follow_up">Follow-up needed</option></select></div>
+        <textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Add observations, discussion points, or follow-up actions…" className="mt-4 min-h-28 w-full rounded-xl border border-slate-300 bg-white p-3 text-sm" />
+        <div className="mt-3 flex items-center gap-3"><button onClick={()=>void saveReview()} disabled={saving} className="rounded-lg bg-indigo-700 px-4 py-2 font-semibold text-white disabled:opacity-60">{saving?'Saving…':'Save review'}</button>{saved&&<span className="text-sm font-medium text-emerald-700">Saved</span>}</div>
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-5">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2"><h2 className="font-bold">Self-report profile</h2><p className="mt-1 text-sm text-slate-500">Trait scores shown as a visual profile.</p><div className="mt-5 space-y-3">{traits.map(([trait,score])=><div key={trait}><div className="flex justify-between text-sm"><span className="capitalize font-medium">{trait}</span><span className="font-semibold text-indigo-700">{score}%</span></div><div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-indigo-600" style={{width:`${score}%`}}/></div></div>)}</div></div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-3"><h2 className="font-bold">Session snapshot</h2><p className="mt-1 text-sm text-slate-500">Use the report alongside counsellor context, not as a diagnostic score.</p><div className="mt-5 grid gap-4 sm:grid-cols-3"><Snapshot label="Data quality" value={analytics.sample_count ? `${analytics.sample_count} samples` : 'Limited'} detail={analytics.sample_count ? 'Browser observations available' : 'No camera telemetry'} /><Snapshot label="Face presence" value={`${analytics.face_presence_percent}%`} detail="Detected during session"/><Snapshot label="Response pace" value={formatMilliseconds(analytics.response_latency.average_latency_ms)} detail="Average per question"/></div></div>
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        {Object.entries(
-          data.results.trait_scores,
-        ).map(([trait, score]) => (
+        {traits.map(([trait, score]) => (
           <div
             key={trait}
             className="rounded-xl border bg-white p-4"

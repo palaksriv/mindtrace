@@ -12,6 +12,8 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12, max_length=128)
     role: UserRole
+    # Only used when role == "counsellor"; must match MINDTRACE_COUNSELLOR_INVITE_CODE.
+    invite_code: str | None = Field(default=None, max_length=128)
 
 
 class LoginRequest(BaseModel):

@@ -1,246 +1,81 @@
-import base64
+"""Browser-derived behavioural telemetry endpoints."""
 
-import cv2
-import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
 from app.database import get_db
-from app.models.assessment import (
-    BehaviorTelemetry,
-    Response,
-    Session as AssessmentSession,
-)
+from app.models.assessment import BehaviorTelemetry, ConsentRecord, Response, Session as AssessmentSession, SessionStatus
 from app.models.user import User
-from app.services.analytics.behavior_analytics import (
-    calculate_behavioral_analytics,
-)
-from app.services.cv.face_detector import FaceDetector
+from app.services.analytics.behavior_analytics import calculate_behavioral_analytics
+
+router = APIRouter(prefix="/cv", tags=["CV"])
 
 
-router = APIRouter(
-    prefix="/cv",
-    tags=["CV"],
-)
-
-detector = FaceDetector()
+class GazePayload(BaseModel):
+    horizontal: float = Field(ge=-0.5, le=0.5)
+    vertical: float = Field(ge=-0.5, le=0.5)
+    direction: str = Field(max_length=50)
 
 
-class FrameRequest(BaseModel):
-    image: str
+class HeadPosePayload(BaseModel):
+    yaw: float = Field(ge=-90, le=90)
+    pitch: float = Field(ge=-90, le=90)
+    roll: float = Field(ge=-90, le=90)
+
+
+class TelemetryRequest(BaseModel):
     session_id: int
+    face_detected: bool
+    landmark_count: int = Field(ge=0, le=1000)
+    left_ear: float = Field(ge=0, le=10)
+    right_ear: float = Field(ge=0, le=10)
+    blink_detected: bool
+    blink_count: int = Field(ge=0)
+    gaze: GazePayload
+    head_pose: HeadPosePayload
 
 
-class PreviewFrameRequest(BaseModel):
-    image: str
+def _owned_session(session_id: int, user: User, database: Session) -> AssessmentSession:
+    item = database.query(AssessmentSession).filter(
+        AssessmentSession.id == session_id,
+        AssessmentSession.student_id == user.id,
+    ).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Assessment session not found")
+    return item
 
 
-@router.post("/preview")
-def preview_frame(
-    payload: PreviewFrameRequest,
-    current_user: User = Depends(get_current_user),
-):
+@router.post("/telemetry")
+def record_telemetry(payload: TelemetryRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if current_user.role != "student":
-        raise HTTPException(
-            status_code=403,
-            detail="Student access required",
-        )
-
-    if "," in payload.image:
-        image_data = payload.image.split(",", 1)[1]
-    else:
-        image_data = payload.image
-
-    try:
-        image_bytes = base64.b64decode(image_data)
-
-        np_array = np.frombuffer(
-            image_bytes,
-            dtype=np.uint8,
-        )
-
-        frame = cv2.imdecode(
-            np_array,
-            cv2.IMREAD_COLOR,
-        )
-
-        if frame is None:
-            raise ValueError("Invalid image")
-
-        result = detector.process(frame)
-
-    except Exception as error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to analyze preview frame: {error}",
-        ) from error
-
-    return {
-        "face_detected": result["face_detected"],
-        "landmark_count": result["landmark_count"],
-        "left_ear": result["left_ear"],
-        "right_ear": result["right_ear"],
-        "blink_detected": result["blink_detected"],
-        "blink_count": result["blink_count"],
-        "gaze": result["gaze"],
-        "head_pose": result["head_pose"],
-    }
-
-
-@router.post("/analyze")
-def analyze_frame(
-    payload: FrameRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if current_user.role != "student":
-        raise HTTPException(
-            status_code=403,
-            detail="Student access required",
-        )
-
-    session = (
-        db.query(AssessmentSession)
-        .filter(
-            AssessmentSession.id == payload.session_id,
-            AssessmentSession.student_id == current_user.id,
-        )
-        .first()
+        raise HTTPException(status_code=403, detail="Student access required")
+    session = _owned_session(payload.session_id, current_user, db)
+    if session.status == SessionStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="This assessment session is already complete")
+    consent = db.query(ConsentRecord).filter(ConsentRecord.session_id == session.id).first()
+    if consent is None or not consent.granted:
+        raise HTTPException(status_code=403, detail="Webcam consent has not been recorded for this session")
+    item = BehaviorTelemetry(
+        session_id=payload.session_id, face_detected=payload.face_detected,
+        landmark_count=payload.landmark_count, left_ear=payload.left_ear,
+        right_ear=payload.right_ear, blink_detected=payload.blink_detected,
+        blink_count=payload.blink_count, gaze_horizontal=payload.gaze.horizontal,
+        gaze_vertical=payload.gaze.vertical, gaze_direction=payload.gaze.direction,
+        head_yaw=payload.head_pose.yaw, head_pitch=payload.head_pose.pitch,
+        head_roll=payload.head_pose.roll,
     )
-
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Assessment session not found",
-        )
-
-    if "," in payload.image:
-        image_data = payload.image.split(",", 1)[1]
-    else:
-        image_data = payload.image
-
-    try:
-        image_bytes = base64.b64decode(image_data)
-
-        np_array = np.frombuffer(
-            image_bytes,
-            dtype=np.uint8,
-        )
-
-        frame = cv2.imdecode(
-            np_array,
-            cv2.IMREAD_COLOR,
-        )
-
-        if frame is None:
-            raise ValueError("Invalid image")
-
-        print(
-            "FRAME:",
-            frame.shape,
-            "MIN:",
-            frame.min(),
-            "MAX:",
-            frame.max(),
-        )
-
-        result = detector.process(frame)
-
-        print(
-            "CV RESULT:",
-            result["face_detected"],
-            result["landmark_count"],
-        )
-
-    except Exception as error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to analyze frame: {error}",
-        ) from error
-
-    telemetry = BehaviorTelemetry(
-        session_id=session.id,
-        face_detected=result["face_detected"],
-        landmark_count=result["landmark_count"],
-        left_ear=result["left_ear"],
-        right_ear=result["right_ear"],
-        blink_detected=result["blink_detected"],
-        blink_count=result["blink_count"],
-        gaze_horizontal=result["gaze"]["horizontal"],
-        gaze_vertical=result["gaze"]["vertical"],
-        gaze_direction=result["gaze"]["direction"],
-        head_yaw=result["head_pose"]["yaw"],
-        head_pitch=result["head_pose"]["pitch"],
-        head_roll=result["head_pose"]["roll"],
-    )
-
-    db.add(telemetry)
+    db.add(item)
     db.commit()
-
-    return {
-        "face_detected": result["face_detected"],
-        "landmark_count": result["landmark_count"],
-        "left_ear": result["left_ear"],
-        "right_ear": result["right_ear"],
-        "blink_detected": result["blink_detected"],
-        "blink_count": result["blink_count"],
-        "gaze": result["gaze"],
-        "head_pose": result["head_pose"],
-    }
+    return {"recorded": True}
 
 
 @router.get("/analytics/{session_id}")
-def get_behavioral_analytics(
-    session_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def get_behavioral_analytics(session_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if current_user.role != "student":
-        raise HTTPException(
-            status_code=403,
-        detail="Student access required",
-        )
-
-    session = (
-        db.query(AssessmentSession)
-        .filter(
-            AssessmentSession.id == session_id,
-            AssessmentSession.student_id == current_user.id,
-        )
-        .first()
-    )
-
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Assessment session not found",
-        )
-
-    telemetry = (
-        db.query(BehaviorTelemetry)
-        .filter(
-            BehaviorTelemetry.session_id == session_id,
-        )
-        .order_by(
-            BehaviorTelemetry.recorded_at.asc(),
-        )
-        .all()
-    )
-
-    responses = (
-        db.query(Response)
-        .filter(
-            Response.session_id == session_id,
-        )
-        .order_by(
-            Response.answered_at.asc(),
-        )
-        .all()
-    )
-
-    return calculate_behavioral_analytics(
-        telemetry,
-        responses,
-    )
+        raise HTTPException(status_code=403, detail="Student access required")
+    _owned_session(session_id, current_user, db)
+    telemetry = db.query(BehaviorTelemetry).filter(BehaviorTelemetry.session_id == session_id).order_by(BehaviorTelemetry.recorded_at.asc()).all()
+    responses = db.query(Response).filter(Response.session_id == session_id).order_by(Response.answered_at.asc()).all()
+    return calculate_behavioral_analytics(telemetry, responses)

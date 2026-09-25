@@ -16,6 +16,7 @@ def register(client: TestClient, role: str) -> tuple[dict[str, object], str]:
             "email": email,
             "password": "A secure test password 2026!",
             "role": role,
+            "invite_code": "test-invite-code" if role == "counsellor" else None,
         },
     )
     assert response.status_code == 201

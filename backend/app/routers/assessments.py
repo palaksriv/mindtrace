@@ -7,11 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession, joinedload
 
 from app.auth.dependencies import require_role
+from app.config import get_settings
 from app.dependencies import get_db
-from app.models.assessment import Assessment, Question, Response, Session, SessionStatus
+from app.models.assessment import Assessment, ConsentRecord, Question, Response, Session, SessionStatus
 from app.models.user import User, UserRole
 from app.schemas.assessment import (
-    AssessmentDetail, AssessmentResults, AssessmentSummary, CreateSessionRequest, SessionResponse,
+    AssessmentDetail, AssessmentResults, AssessmentSummary, ConsentRequest, ConsentResponse,
+    CreateSessionRequest, SessionResponse,
     StoredResponse, SubmitResponseRequest,
 )
 from app.services.scoring import calculate_trait_scores
@@ -51,6 +53,25 @@ def create_session(payload: CreateSessionRequest, student: User = Depends(requir
     database.commit()
     database.refresh(item)
     return item
+
+
+@router.post("/sessions/{session_id}/consent", response_model=ConsentResponse)
+def record_consent(session_id: int, payload: ConsentRequest, student: User = Depends(require_role(UserRole.STUDENT)), database: DbSession = Depends(get_db)) -> ConsentRecord:
+    """Store an auditable webcam-consent record before any telemetry is accepted."""
+    item = owned_session(session_id, student, database)
+    if item.status == SessionStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="This assessment session is already complete")
+    record = database.scalar(select(ConsentRecord).where(ConsentRecord.session_id == item.id))
+    version = get_settings().consent_notice_version
+    if record is None:
+        record = ConsentRecord(session_id=item.id, granted=payload.granted, notice_version=version)
+        database.add(record)
+    else:
+        record.granted, record.notice_version = payload.granted, version
+        record.recorded_at = datetime.now(timezone.utc)
+    database.commit()
+    database.refresh(record)
+    return record
 
 
 @router.post("/sessions/{session_id}/responses", response_model=StoredResponse)

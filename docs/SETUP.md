@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.11 or newer
+- Python 3.12
 - Node.js 20 or newer
 
 ## Backend
@@ -10,8 +10,8 @@
 From the repository root in PowerShell:
 
 ```powershell
+Copy-Item .env.example .env
 cd backend
-Copy-Item ..\.env.example ..\.env
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -42,8 +42,8 @@ In a second terminal:
 
 ```powershell
 cd frontend
-pnpm install
-pnpm run dev
+npm install
+npm run dev
 ```
 
 Open the URL Vite prints (normally `http://localhost:5173`). The page makes a request to the backend health endpoint. To use a different backend URL, set `VITE_API_URL` before starting Vite.

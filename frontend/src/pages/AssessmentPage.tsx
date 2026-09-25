@@ -73,6 +73,13 @@ export function AssessmentPage() {
           },
         )
 
+      // Record an auditable consent entry BEFORE any telemetry is accepted.
+      await api.post(
+        `/sessions/${data.id}/consent`,
+        { granted: true },
+        { headers: authHeaders() },
+      )
+
       setSession(data)
       setDisplayedAt(new Date())
       setError(null)

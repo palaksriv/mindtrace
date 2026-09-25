@@ -23,6 +23,7 @@ type StudentHistory = {
   student: Student
   sessions: AssessmentSession[]
 }
+type Trend = { session_id:number; completed_at:string; trait_scores:Record<string,number>; average_latency_ms:number; sample_count:number; face_presence_percent:number }
 
 
 function formatDate(value: string | null) {
@@ -41,6 +42,7 @@ export function StudentHistoryPage() {
 
   const [error, setError] =
     useState<string | null>(null)
+  const [trends, setTrends] = useState<Trend[]>([])
 
   useEffect(() => {
     if (!studentId) {
@@ -67,6 +69,8 @@ export function StudentHistoryPage() {
 
     loadStudent()
   }, [studentId])
+
+  useEffect(() => { if (!studentId) return; api.get<Trend[]>(`/counsellor/students/${studentId}/trends`, {headers:authHeaders()}).then(r=>setTrends(r.data)).catch(()=>undefined) }, [studentId])
 
   if (error) {
     return (
@@ -153,6 +157,8 @@ export function StudentHistoryPage() {
           </p>
         </div>
       </div>
+
+      {trends.length > 0 && <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><h2 className="text-xl font-bold">Personal session trends</h2><p className="mt-1 text-sm text-slate-500">Compare this student's own sessions over time. These are descriptive summaries, not clinical trends.</p></div><span className="text-sm font-medium text-indigo-700">{trends.length} completed session{trends.length===1?'':'s'}</span></div><div className="mt-6 grid gap-5 lg:grid-cols-2"><div><h3 className="font-semibold">Response pace</h3><div className="mt-3 space-y-3">{trends.map((trend,index)=><div key={trend.session_id} className="grid grid-cols-[5rem_1fr_4rem] items-center gap-3 text-sm"><span className="text-slate-500">Session {index+1}</span><div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-indigo-600" style={{width:`${Math.min(100,trend.average_latency_ms/100)}%`}}/></div><span className="text-right font-semibold">{(trend.average_latency_ms/1000).toFixed(1)}s</span></div>)}</div></div><div><h3 className="font-semibold">Data coverage</h3><div className="mt-3 space-y-3">{trends.map((trend,index)=><div key={trend.session_id} className="grid grid-cols-[5rem_1fr_4rem] items-center gap-3 text-sm"><span className="text-slate-500">Session {index+1}</span><div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-emerald-500" style={{width:`${trend.face_presence_percent}%`}}/></div><span className="text-right font-semibold">{trend.sample_count?`${trend.face_presence_percent}%`:'No CV'}</span></div>)}</div></div></div></div>}
 
       <div>
         <h2 className="text-2xl font-bold">
