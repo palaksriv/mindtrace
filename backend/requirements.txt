@@ -13,3 +13,5 @@ numpy==2.5.3
 scipy
 pytest==8.4.2
 python-dotenv==1.2.3
+
+httpx2==2.13.1
